@@ -1,6 +1,13 @@
 # Exome Utilities
 This repository holds useful scripts to carry out bespoke checks in exome data. Each script is detailed in the below list:
 
+## VEP_SeqR.sh
+Run a tailored version of Ensembl's Variant Effect Predictor (VEP), to annotated joint called VCF file, for specific use with the seqr browser.
+
+## Split_SeqR.sh
+Split VCF file using GATK's SelectVariants function, based on input pedigree file. 
+
+
 ## Fastq_NextSeq_Prep.sh
 A bash script to take the four gunzipped fastq files from an Illumina Nextseq and unify these into a single fastq file.
 
