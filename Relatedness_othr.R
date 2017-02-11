@@ -16,7 +16,7 @@ library(dplyr)
 library(readr)
 library(openxlsx)
 
-foo <- read_tsv("/Volumes/andrew/Temp/Raw_Callset/out.relatedness2") %>%
+foo <- read_tsv("/Volumes/andrew/2016Oct_SeqR_WES/relatedness/out.relatedness2") %>%
        as.data.frame %>% mutate(MAP = paste0(INDV1,"_",INDV2))
 ped <- read_tsv("/Volumes/WORKING_DATA/Exome_Project/Scripts/Ref/Samples.ped", col_names = F) %>%
        as.data.frame

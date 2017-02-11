@@ -1,0 +1,152 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load_libs, message=FALSE}
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(exomeCopy)
+library(readr)
+library(ExomeDepth)
+library(openxlsx)
+```
+
+
+```{r ref_files}
+target.file        <- "../ref/nexterarapidcapture_exome_targetedregions.bed"
+bam.files          <- list.files(path       = "../data_in/FAM24_Targets/", 
+                                 pattern    = "*.bam$", 
+                                 full.names = T)
+pid_list           <- read_tsv("../ref/PID gene list 16-08-16_KE.txt") %>% as.data.frame 
+sample.names       <- sapply(basename(bam.files), function(x){ strsplit(x, "_")[[1]][1] }) %>% as.vector 
+reference.file     <- "../ref/ucsc.hg19.fasta"
+pedigree           <- read_tsv("../ref/Samples.ped", col_names = F) %>% 
+                      as.data.frame 
+pedigree_in        <- pedigree[match(sample.names, pedigree$X2),]
+```
+
+
+```{r ed_prep}
+data(exons.hg19)
+data(Conrad.hg19)
+exons.hg19.GRanges <- GenomicRanges::GRanges(seqnames = exons.hg19$chromosome,
+                                             IRanges::IRanges(start = exons.hg19$start,
+                                                              end   = exons.hg19$end),
+                                             names    = exons.hg19$name)
+
+my.counts          <- getBamCounts(bed.frame      = exons.hg19,
+                                   bam.files      = bam.files,
+                                   include.chr    = T,
+                                   referenceFasta = reference.file)
+ExomeCount.dafr    <- as(my.counts[, colnames(my.counts)], 'data.frame')
+colnames(ExomeCount.dafr)[-c(1:6)] <- sample.names
+ExomeCount.dafr$chromosome         <- gsub("chr", "", ExomeCount.dafr$space)
+```
+
+
+```{r analyse_cnv}
+test.samples       <- grep("2", pedigree_in$X6)
+ctrl.samples       <- pedigree_in[grep("1", pedigree_in$X6),]
+df_out             <- c()
+
+for(i in test.samples) {
+  my.test            <- ExomeCount.dafr[,sample.names[i]]
+  pedigree_test      <- pedigree_in[pedigree_in$X1 %in% pedigree_in[i,]$X1,]
+  if(nrow(pedigree_test) == 1) {
+    my.ref.samples     <- sample.names[grep("1", pedigree_in$X6)]
+  } else {
+    my.ref.samples     <- sample.names[grep("1", pedigree_in$X6)]
+    my.ref.samples     <- setdiff(my.ref.samples, pedigree_test$X2)
+  }
+
+  my.reference.set   <- as.matrix(ExomeCount.dafr[, my.ref.samples]) 
+  my.choice          <- select.reference.set(test.counts      = my.test,
+                                             reference.counts = my.reference.set,
+                                             bin.length       = (ExomeCount.dafr$end - ExomeCount.dafr$start)/10,
+                                             n.bins.reduced   = 10000)
+  
+  # my.matrix          <- as.matrix(ExomeCount.dafr[, my.choice$reference.choice, drop = F])
+  # my.ref.selected    <- apply(X   = my.matrix,
+  #                             MAR = 1,
+  #                             FUN = sum)
+  ref.sample         <- my.choice$summary.stats %>% 
+                        filter(selected == "TRUE") %>% 
+                        select(ref.samples)
+  my.ref.selected    <- ExomeCount.dafr[,ref.sample[1,1] %>% as.character]
+  correlation_test   <- round(cor(my.ref.selected, my.test),3)
+  
+  all.exons          <- new('ExomeDepth', 
+                            test       = my.test,
+                            reference  = my.ref.selected, 
+                            formula    = 'cbind(test, reference) ~ 1')
+  
+  all.exons          <- CallCNVs(x                      = all.exons,
+                                 transition.probability = 10^-4,
+                                 chromosome             = ExomeCount.dafr$space,
+                                 start                  = ExomeCount.dafr$start,
+                                 end                    = ExomeCount.dafr$end,
+                                 name                   = ExomeCount.dafr$names)
+  all.exons@CNV.calls$chromosome <- gsub("chr", "", all.exons@CNV.calls$chromosome)
+  
+  all.exons.anno     <- AnnotateExtra(x                    = all.exons,
+                                      reference.annotation = Conrad.hg19.common.CNVs,
+                                      min.overlap          = 0.5, 
+                                      column.name          = 'Known_Annotation')
+  all.exons.anno     <- AnnotateExtra(x                    = all.exons.anno,
+                                      reference.annotation = exons.hg19.GRanges,
+                                      min.overlap          = 0.0001,
+                                      column.name          = 'Exon_Annotation')
+  all.exons.anno     <- all.exons.anno@CNV.calls %>%
+                        as.data.frame %>%
+                        arrange(desc(abs(BF)))
+  all.exons.anno$PID <- "No"
+  pid_targets        <- sapply(pid_list$`Gene symbol`, 
+                               function(x) { 
+                                 x <- as.character(x)
+                                 y <- as.vector(all.exons.anno$Exon_Annotation)
+                                 grep(paste0("^", x, "_|,", x, "_"), y)
+                               }) %>% 
+                        Filter(f = length)
+  
+  if(length(pid_targets) != 0) {
+    pid_names                       <- rep(names(pid_targets), lengths(pid_targets))
+    pid_targets                     <- pid_targets %>% unlist
+    names(pid_targets)              <- pid_names
+    all.exons.anno$PID[pid_targets] <- names(pid_targets)
+  }
+  
+  filtered_results   <- all.exons.anno[all.exons.anno$PID != "No",]
+  
+  wb         <- openxlsx::createWorkbook()
+  sheet_name <- paste0("Results_",sample.names[i])
+  openxlsx::addWorksheet(wb, sheet_name)
+  openxlsx::writeData(wb, sheet_name, all.exons.anno)
+  if(nrow(filtered_results) > 0) {
+    sheet_name <- paste0("PID_Hits_",sample.names[i])
+    openxlsx::addWorksheet(wb, sheet_name)
+    openxlsx::writeData(wb, sheet_name, filtered_results)
+  }
+  openxlsx::saveWorkbook(wb, paste0("../Analysis/ExomeDepth_",sample.names[i],".xlsx"), overwrite = T)
+  
+  message("Sample     :", sample.names[i])
+  message("PID   Hits:", nrow(filtered_results))
+  message("Total Hits:", nrow(all.exons.anno))
+  
+  df_out <- rbind(df_out, data.frame(Sample     = sample.names[i],
+                                     PID_Hits   = nrow(filtered_results),
+                                     Total_Hits = nrow(all.exons.anno),
+                                     cor_to_ref = correlation_test))
+  filtered_results %>% print
+}
+df_out
+```
+
+
+
+
+
+
+
